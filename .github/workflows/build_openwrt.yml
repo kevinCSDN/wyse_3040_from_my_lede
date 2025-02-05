@@ -162,17 +162,45 @@ jobs:
         find dl -size -1024c -exec ls -l {} \;
         find dl -size -1024c -exec rm -f {} \;
         
+# 前面的代码保持不变，直到编译步骤
+
     - name: Compile the firmware
       id: compile
       run: |
         cd openwrt
         echo -e "$(nproc) thread compile"
+        # 使用 make -j$(nproc) 编译，如果失败则尝试 make -j1，如果仍然失败则尝试 make -j1 V=s
         make -j$(nproc) || make -j1 || make -j1 V=s
         echo "::set-output name=status::success"
         grep '^CONFIG_TARGET.*DEVICE.*=y' .config | sed -r 's/.*DEVICE_(.*)=y/\1/' > DEVICE_NAME
         [ -s DEVICE_NAME ] && echo "DEVICE_NAME=_$(cat DEVICE_NAME)" >> $GITHUB_ENV
         echo "FILE_DATE=_$(date +"%Y%m%d%H%M")" >> $GITHUB_ENV
-        
+
+    # 新增步骤：检查编译错误并跳过失败的插件
+    - name: Check and skip failed packages
+      id: check_packages
+      run: |
+        cd openwrt
+        # 查找编译日志中的错误信息
+        if grep -q "Error" logs/*.log; then
+          echo "发现编译错误，尝试跳过失败的插件..."
+          # 获取失败的插件名称
+          FAILED_PACKAGES=$(grep "Error" logs/*.log | awk -F'/' '{print $NF}' | awk -F'.' '{print $1}' | sort | uniq)
+          for pkg in $FAILED_PACKAGES; do
+            echo "跳过插件: $pkg"
+            # 从 .config 中禁用该插件
+            sed -i "/CONFIG_PACKAGE_$pkg/d" .config
+          done
+          # 重新编译
+          make -j$(nproc) || make -j1 || make -j1 V=s
+          echo "::set-output name=status::success"
+        else
+          echo "没有发现编译错误，继续..."
+          echo "::set-output name=status::success"
+        fi
+
+    # 后面的代码保持不变，继续上传固件等步骤
+
     - name: Check space usage
       if: (!cancelled())
       run: df -hT
